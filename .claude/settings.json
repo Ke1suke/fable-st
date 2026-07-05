@@ -1,0 +1,39 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/block-danger.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/verify.sh",
+            "timeout": 120
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "prompt",
+            "prompt": "会話の最後の作業を評価せよ: $ARGUMENTS 。コード変更を伴うタスクだった場合、テスト・lint・型チェック等の検証が実際に実行され成功した証拠が示されているか確認する。検証なしに完了を主張している場合は ok: false とし、reason に不足している検証を書く。コード変更を伴わない会話や、ユーザーが明示的に検証不要とした場合は ok: true とする。",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}
