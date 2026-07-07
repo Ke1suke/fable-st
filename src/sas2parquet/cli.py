@@ -37,6 +37,12 @@ def main(argv: list[str] | None = None) -> int:
                         "file fits in memory, otherwise sas7 CLI / pyreadstat (bounded memory)")
     p.add_argument("--compression", default="zstd",
                    choices=["zstd", "snappy", "lz4", "gzip", "uncompressed"])
+    p.add_argument("--compression-level", type=int, default=None,
+                   help="codec level (default: zstd uses level 1 - fastest with "
+                        "near-identical size; other codecs use their default)")
+    p.add_argument("--no-statistics", dest="statistics", action="store_false",
+                   help="skip parquet min/max statistics (~10%% faster writes, "
+                        "but disables row-group pruning when querying the output)")
     p.add_argument("--chunk-rows", type=int, default=DEFAULT_CHUNK_ROWS,
                    help=f"rows per chunk for the pyreadstat engine (default {DEFAULT_CHUNK_ROWS})")
     p.add_argument("--threads", type=int, default=None,
@@ -101,6 +107,8 @@ def _convert_kwargs(args: argparse.Namespace) -> dict:
     return dict(
         engine=args.engine,
         compression=args.compression,
+        compression_level=args.compression_level,
+        statistics=args.statistics,
         chunk_rows=args.chunk_rows,
         threads=args.threads,
         preserve_order=args.preserve_order,

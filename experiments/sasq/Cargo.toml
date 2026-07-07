@@ -1,0 +1,17 @@
+[package]
+name = "sasq"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+sas7bdat = "0.2.0"
+arrow-array = "57"
+arrow-buffer = "57"
+arrow-schema = "57"
+arrow-select = "57"
+parquet = { version = "57", features = ["arrow", "zstd", "lz4", "snap"] }
+crossbeam-channel = "0.5"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
