@@ -1,0 +1,7 @@
+__pycache__/
+*.egg-info/
+.venv/
+*.parquet
+*.sas7bdat
+.pytest_cache/
+dist/
