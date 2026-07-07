@@ -4,7 +4,8 @@ import polars as pl
 import pyarrow.parquet as pq
 import pytest
 
-from sas2parquet import convert_file
+from sas2parquet import convert_file, sas7_binary
+from sas2parquet.convert import _auto_candidates
 from sas2parquet.cli import main as cli_main
 
 from fixture_writer import write_fixture
@@ -48,6 +49,43 @@ def test_engines_produce_identical_data(sas_file, tmp_path):
     convert_file(sas_file, a, engine="polars")
     convert_file(sas_file, b, engine="pyreadstat")
     assert pl.read_parquet(a).equals(pl.read_parquet(b))
+
+
+@pytest.mark.skipif(sas7_binary() is None, reason="sas7 CLI not installed")
+def test_sas7_engine_matches_polars(sas_file, tmp_path):
+    a, b = tmp_path / "a.parquet", tmp_path / "b.parquet"
+    convert_file(sas_file, a, engine="polars")
+    r = convert_file(sas_file, b, engine="sas7")
+    assert r.rows == N_ROWS
+    assert pl.read_parquet(b).equals(pl.read_parquet(a))
+
+
+def test_auto_prefers_memory_safe_engines_for_huge_files(sas_file, monkeypatch):
+    import sas2parquet.convert as c
+
+    monkeypatch.setattr(c, "_available_ram", lambda: 10**15)
+    assert _auto_candidates(sas_file)[0] == "polars"
+    monkeypatch.setattr(c, "_available_ram", lambda: sas_file.stat().st_size)
+    assert "polars" not in _auto_candidates(sas_file)
+
+
+def test_row_order_preserved_across_batches(sas_file, tmp_path):
+    # Small batches + threads force the multi-batch path where polars-readstat
+    # would emit rows out of order without preserve_order.
+    dst = tmp_path / "ordered.parquet"
+    convert_file(sas_file, dst, engine="polars", batch_size=500, threads=4)
+    ids = pl.read_parquet(dst)["ID"].to_list()
+    assert ids == [float(i + 1) for i in range(N_ROWS)]
+
+
+def test_informative_nulls_polars_only(sas_file, tmp_path):
+    with pytest.raises(ValueError):
+        convert_file(sas_file, tmp_path / "x.parquet", engine="pyreadstat",
+                     informative_nulls=True)
+    dst = tmp_path / "inf.parquet"
+    convert_file(sas_file, dst, engine="polars", informative_nulls=True)
+    df = pl.read_parquet(dst)
+    assert "VALUE_null" in df.columns  # indicator column for special missings
 
 
 def test_cli_directory_mode(sas_file, tmp_path):

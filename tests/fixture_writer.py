@@ -43,8 +43,9 @@ def _load_readstat() -> ctypes.CDLL:
     return lib
 
 
-def write_fixture(path: Path | str, n_rows: int = 10_000) -> Path:
-    """Write a 3-column fixture: ID (double), VALUE (double, ~1% missing), NAME (string)."""
+def write_fixture(path: Path | str, n_rows: int = 10_000, n_extra_double_cols: int = 0) -> Path:
+    """Write a fixture: ID (double), VALUE (double, ~1% missing), NAME (string),
+    plus n_extra_double_cols numeric columns X000.. for wide-file benchmarks."""
     path = Path(path)
     lib = _load_readstat()
     with open(path, "wb") as fh:
@@ -60,6 +61,10 @@ def write_fixture(path: Path | str, n_rows: int = 10_000) -> Path:
         v_val = lib.readstat_add_variable(w, b"VALUE", READSTAT_TYPE_DOUBLE, 8)
         v_name = lib.readstat_add_variable(w, b"NAME", READSTAT_TYPE_STRING, 32)
         lib.readstat_variable_set_label(v_val, b"Measured value")
+        v_extra = [
+            lib.readstat_add_variable(w, f"X{j:03d}".encode(), READSTAT_TYPE_DOUBLE, 8)
+            for j in range(n_extra_double_cols)
+        ]
 
         rc = lib.readstat_begin_writing_sas7bdat(w, None, n_rows)
         if rc != 0:
@@ -72,6 +77,8 @@ def write_fixture(path: Path | str, n_rows: int = 10_000) -> Path:
             else:
                 lib.readstat_insert_double_value(w, v_val, i * 1.5)
             lib.readstat_insert_string_value(w, v_name, f"item_{i % 97}".encode())
+            for j, v in enumerate(v_extra):
+                lib.readstat_insert_double_value(w, v, (i * 31 + j * 7) % 1000 / 3.0)
             lib.readstat_end_row(w)
         rc = lib.readstat_end_writing(w)
         if rc != 0:

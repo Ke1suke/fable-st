@@ -1,21 +1,32 @@
 """Core conversion logic: .sas7bdat -> .parquet.
 
-Two engines:
+Three engines (measured on a 1.0GB, 2.7M x 43 file in a 500MB memory cgroup):
 
-- "polars"     polars-readstat (Rust). Lazy scan + sink_parquet so the file is
-               streamed in batches and never fully materialized in memory.
-               Fastest path; works for files larger than RAM.
-- "pyreadstat" pyreadstat (ReadStat C library) read in chunks, each chunk
-               appended to the Parquet file via pyarrow.ParquetWriter.
-               Slower, but ReadStat has the longest track record with odd
-               encodings and exotic sas7bdat variants, so it is the fallback.
+- "polars"     polars-readstat (Rust) lazy scan + sink_parquet. Fastest
+               (~2-4s/GB), but its reader holds roughly the whole file in
+               memory (OOM-killed under the 500MB limit) - use it when the
+               file fits comfortably in RAM.
+- "sas7"       The pure-Rust `sas7` CLI (cargo install sas7bdat --features
+               cli,parquet), spawned as a subprocess. Nearly as fast
+               (~7s/GB) with a tiny fixed footprint (64MB peak on 1GB input;
+               passed the 500MB cgroup). No Python needed at runtime.
+               SAS label metadata is not embedded on this path.
+- "pyreadstat" ReadStat C library read in chunks, appended via
+               pyarrow.ParquetWriter. Slowest (~26s/GB) but bounded memory
+               (~300MB regardless of file size) and the longest compatibility
+               track record with odd encodings / sas7bdat variants.
 
-"auto" tries polars first and falls back to pyreadstat on any read error.
+"auto" picks by file size vs available RAM: polars when the file fits,
+otherwise sas7 (if installed) then pyreadstat; any failure falls through
+to the next candidate.
 """
 
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,8 +36,12 @@ import pyarrow.parquet as pq
 import pyreadstat
 
 DEFAULT_CHUNK_ROWS = 100_000
+ENGINES = ("polars", "sas7", "pyreadstat")
+# In-memory need of the polars reader is roughly the decoded file size; only
+# pick it automatically when the file uses at most this share of available RAM.
+POLARS_RAM_SHARE = 0.4
 
-Engine = str  # "auto" | "polars" | "pyreadstat"
+Engine = str  # "auto" | "polars" | "sas7" | "pyreadstat"
 
 
 @dataclass
@@ -71,11 +86,23 @@ def _convert_polars(
     compression: str,
     threads: int | None,
     row_group_size: int,
+    preserve_order: bool,
+    batch_size: int | None,
+    informative_nulls: bool,
 ) -> int:
     import polars as pl
     from polars_readstat import scan_readstat
 
-    lf = scan_readstat(str(src), threads=threads)
+    # preserve_order=False (the polars-readstat default) allows batches to be
+    # emitted out of order for throughput. SAS datasets are ordered, so we
+    # default to ordered output and make reordering an explicit opt-in.
+    lf = scan_readstat(
+        str(src),
+        threads=threads,
+        preserve_order=preserve_order,
+        batch_size=batch_size,
+        informative_nulls={"columns": "all"} if informative_nulls else None,
+    )
     lf.sink_parquet(
         str(dst),
         compression=compression,
@@ -96,6 +123,9 @@ def _convert_pyreadstat(
     writer: pq.ParquetWriter | None = None
     rows = 0
     try:
+        # Chunks go through pandas deliberately: pyreadstat's dict output holds
+        # object arrays, and Table.from_pandas on its DataFrame output benchmarks
+        # ~30% faster with ~40% less peak memory than converting those directly.
         for df, _meta in pyreadstat.read_file_in_chunks(
             pyreadstat.read_sas7bdat, str(src), chunksize=chunk_rows
         ):
@@ -103,13 +133,46 @@ def _convert_pyreadstat(
             if writer is None:
                 schema = table.schema.with_metadata(_kv_metadata(src))
                 writer = pq.ParquetWriter(str(dst), schema, compression=compression)
-                table = table.cast(pa.schema(table.schema, metadata=schema.metadata))
-            writer.write_table(table, row_group_size=row_group_size)
+            writer.write_table(table.cast(writer.schema), row_group_size=row_group_size)
             rows += len(df)
     finally:
         if writer is not None:
             writer.close()
     return rows
+
+
+def sas7_binary() -> str | None:
+    """Locate the pure-Rust `sas7` converter, if installed."""
+    found = shutil.which("sas7")
+    if found:
+        return found
+    cargo_bin = Path.home() / ".cargo" / "bin" / "sas7"
+    return str(cargo_bin) if cargo_bin.exists() else None
+
+
+def _convert_sas7cli(src: Path, dst: Path, *, threads: int | None) -> int:
+    exe = sas7_binary()
+    if exe is None:
+        raise RuntimeError(
+            "sas7 CLI not found (cargo install sas7bdat --features cli,parquet)"
+        )
+    cmd = [exe, str(src), "--out", str(dst), "--sink", "parquet", "--fail-fast"]
+    if threads:
+        cmd += ["--jobs", str(threads)]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f"sas7 CLI failed: {proc.stderr.strip()[-500:]}")
+    return pq.ParquetFile(str(dst)).metadata.num_rows
+
+
+def _available_ram() -> int:
+    return os.sysconf("SC_AVPHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
+
+
+def _auto_candidates(src: Path) -> list[str]:
+    fits_in_ram = src.stat().st_size <= _available_ram() * POLARS_RAM_SHARE
+    order = ["polars", "sas7", "pyreadstat"] if fits_in_ram else ["sas7", "pyreadstat"]
+    return [e for e in order if e != "sas7" or sas7_binary()]
 
 
 def convert_file(
@@ -121,34 +184,50 @@ def convert_file(
     chunk_rows: int = DEFAULT_CHUNK_ROWS,
     threads: int | None = None,
     row_group_size: int = 512 * 1024,
+    preserve_order: bool = True,
+    batch_size: int | None = None,
+    informative_nulls: bool = False,
 ) -> ConversionResult:
-    """Convert one .sas7bdat file to Parquet. Returns stats about the run."""
+    """Convert one .sas7bdat file to Parquet. Returns stats about the run.
+
+    preserve_order keeps rows in their original SAS order (small throughput
+    cost). informative_nulls adds indicator columns capturing SAS special
+    missing values (.A-.Z, ._) that would otherwise collapse into plain nulls;
+    it is only supported by the polars engine.
+    """
     src, dst = Path(src), Path(dst)
-    if engine not in ("auto", "polars", "pyreadstat"):
+    if engine != "auto" and engine not in ENGINES:
         raise ValueError(f"unknown engine: {engine!r}")
+    if informative_nulls and engine != "polars":
+        raise ValueError("informative_nulls requires engine='polars'")
     dst.parent.mkdir(parents=True, exist_ok=True)
 
+    candidates = _auto_candidates(src) if engine == "auto" else [engine]
     t0 = time.perf_counter()
-    if engine in ("auto", "polars"):
+    rows, used, errors = 0, "", []
+    for i, candidate in enumerate(candidates):
         try:
-            rows = _convert_polars(
-                src, dst, compression=compression, threads=threads, row_group_size=row_group_size
-            )
-            used = "polars"
-        except Exception:
-            if engine == "polars":
-                raise
-            rows = _convert_pyreadstat(
-                src, dst, compression=compression, chunk_rows=chunk_rows,
-                row_group_size=row_group_size,
-            )
-            used = "pyreadstat (fallback)"
-    else:
-        rows = _convert_pyreadstat(
-            src, dst, compression=compression, chunk_rows=chunk_rows,
-            row_group_size=row_group_size,
-        )
-        used = "pyreadstat"
+            if candidate == "polars":
+                rows = _convert_polars(
+                    src, dst, compression=compression, threads=threads,
+                    row_group_size=row_group_size, preserve_order=preserve_order,
+                    batch_size=batch_size, informative_nulls=informative_nulls,
+                )
+            elif candidate == "sas7":
+                rows = _convert_sas7cli(src, dst, threads=threads)
+            else:
+                rows = _convert_pyreadstat(
+                    src, dst, compression=compression, chunk_rows=chunk_rows,
+                    row_group_size=row_group_size,
+                )
+            used = candidate if i == 0 else f"{candidate} (fallback)"
+            break
+        except Exception as e:
+            errors.append(f"{candidate}: {e}")
+            if candidate == candidates[-1]:
+                raise RuntimeError(
+                    f"all engines failed for {src}: " + " | ".join(errors)
+                ) from e
 
     return ConversionResult(
         source=src,

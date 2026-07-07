@@ -32,8 +32,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("-o", "--output", type=Path, default=None,
                    help="output .parquet file (file input) or directory (directory input); "
                         "defaults next to the input")
-    p.add_argument("--engine", choices=["auto", "polars", "pyreadstat"], default="auto",
-                   help="auto = polars-readstat streaming, fall back to pyreadstat (default)")
+    p.add_argument("--engine", choices=["auto", "polars", "sas7", "pyreadstat"], default="auto",
+                   help="auto (default) picks by file size vs free RAM: polars when the "
+                        "file fits in memory, otherwise sas7 CLI / pyreadstat (bounded memory)")
     p.add_argument("--compression", default="zstd",
                    choices=["zstd", "snappy", "lz4", "gzip", "uncompressed"])
     p.add_argument("--chunk-rows", type=int, default=DEFAULT_CHUNK_ROWS,
@@ -44,7 +45,14 @@ def main(argv: list[str] | None = None) -> int:
                    help="parallel files in directory mode (keep 1 for huge files; "
                         "raise it for many small files)")
     p.add_argument("--overwrite", action="store_true", help="overwrite existing .parquet outputs")
+    p.add_argument("--no-preserve-order", dest="preserve_order", action="store_false",
+                   help="allow out-of-order rows for higher throughput (polars engine)")
+    p.add_argument("--informative-nulls", action="store_true",
+                   help="add indicator columns for SAS special missing values "
+                        "(.A-.Z, ._); polars engine only")
     args = p.parse_args(argv)
+    if args.informative_nulls and args.engine != "polars":
+        p.error("--informative-nulls requires --engine polars")
 
     if not args.input.exists():
         p.error(f"input not found: {args.input}")
@@ -53,8 +61,7 @@ def main(argv: list[str] | None = None) -> int:
         dst = args.output or args.input.with_suffix(".parquet")
         if dst.exists() and not args.overwrite:
             p.error(f"{dst} exists (use --overwrite)")
-        r = convert_file(args.input, dst, engine=args.engine, compression=args.compression,
-                         chunk_rows=args.chunk_rows, threads=args.threads)
+        r = convert_file(args.input, dst, **_convert_kwargs(args))
         print(_report(r))
         return 0
 
@@ -78,11 +85,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         with ProcessPoolExecutor(max_workers=args.workers) as pool:
             futs = {
-                pool.submit(
-                    convert_file, src, dst, engine=args.engine,
-                    compression=args.compression, chunk_rows=args.chunk_rows,
-                    threads=args.threads,
-                ): src
+                pool.submit(convert_file, src, dst, **_convert_kwargs(args)): src
                 for src, dst in jobs
             }
             for fut in as_completed(futs):
@@ -94,10 +97,20 @@ def main(argv: list[str] | None = None) -> int:
     return 1 if failures else 0
 
 
+def _convert_kwargs(args: argparse.Namespace) -> dict:
+    return dict(
+        engine=args.engine,
+        compression=args.compression,
+        chunk_rows=args.chunk_rows,
+        threads=args.threads,
+        preserve_order=args.preserve_order,
+        informative_nulls=args.informative_nulls,
+    )
+
+
 def _run_one(src: Path, dst: Path, args: argparse.Namespace) -> int:
     try:
-        r = convert_file(src, dst, engine=args.engine, compression=args.compression,
-                         chunk_rows=args.chunk_rows, threads=args.threads)
+        r = convert_file(src, dst, **_convert_kwargs(args))
         print(_report(r))
         return 0
     except Exception as e:
