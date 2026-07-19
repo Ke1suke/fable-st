@@ -10,7 +10,7 @@
 
 INPUT=$(cat)
 command -v jq >/dev/null 2>&1 || exit 0
-FILE=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty')
+FILE=$(echo "$INPUT" | jq -r '.tool_input.file_path // .tool_input.notebook_path // empty')
 
 [ -z "$FILE" ] && exit 0
 [ ! -f "$FILE" ] && exit 0

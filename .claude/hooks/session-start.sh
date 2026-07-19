@@ -11,6 +11,10 @@ echo "== プロジェクト状態(SessionStart フックによる自動注入) =
 command -v jq >/dev/null 2>&1 \
   || echo "警告: jq が見つからない。ガード系フック(block-danger / guard-files / verify)が全て無効になっている。README の前提ツールに従って導入すること。"
 
+# センチネルの消し忘れ検知(存在する間は自己改変ガードが解除されている)
+[ -f .claude/allow-selfmod ] \
+  && echo "警告: .claude/allow-selfmod が存在する(自己改変ガード解除中。60分で自動失効)。メンテナンス作業が終わっているなら削除すること: rm .claude/allow-selfmod"
+
 if [ -f STATUS.md ]; then
   echo "--- STATUS.md ---"
   # 肥大化していても事故らないよう上限を設ける。行単位で切るためマルチバイト文字を壊さない

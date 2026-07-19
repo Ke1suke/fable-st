@@ -58,17 +58,30 @@ check_path "$FILE"
 [ "$RESOLVED" != "$FILE" ] && check_path "$RESOLVED"
 
 # 自己改変ガード: 防御機構(.claude/ 配下)と運用ルール(CLAUDE.md)の無断変更をブロックする。
+# 大文字小文字は区別しない(ケース非依存ファイルシステム対策)。
+# 除外: .claude/settings.local.json(個人設定。gitignore 済みで自由に編集可)。
 # ユーザーが明示的に依頼した正当な変更の場合のみ、ユーザー承認のもと
-# `touch .claude/allow-selfmod` で一時解除する(作業が終わったら削除する)。
-if [ ! -f "$PROJ/.claude/allow-selfmod" ]; then
+# `touch .claude/allow-selfmod` で一時解除する(作業後に削除。消し忘れ対策として 60 分で自動失効)。
+SENT="$PROJ/.claude/allow-selfmod"
+selfmod_allowed() {
+  [ -f "$SENT" ] || return 1
+  [ -n "$(find "$SENT" -mmin +60 2>/dev/null)" ] && return 1   # 期限切れ
+  return 0
+}
+if ! selfmod_allowed; then
   for p in "$FILE" "$RESOLVED"; do
-    case "$p" in
-      */.claude/*|.claude/*)
-        deny "ガード機構(.claude/ 配下)の変更は原則禁止。ユーザーが依頼した正当な変更なら、ユーザーに 'touch .claude/allow-selfmod' の実行を依頼してから再試行すること" ;;
+    pl=$(echo "$p" | tr '[:upper:]' '[:lower:]')
+    case "$pl" in
+      */settings.local.json) continue ;;
     esac
-    case "$(basename "$p")" in
-      CLAUDE.md)
-        deny "運用ルール(CLAUDE.md)の変更は原則禁止。ユーザーが承認した変更(/retro の教訓追記など)なら、ユーザーに 'touch .claude/allow-selfmod' の実行を依頼してから再試行すること" ;;
+    case "$pl" in
+      */.claude/*|.claude/*)
+        deny "ガード機構(.claude/ 配下)の変更は原則禁止。ユーザーが依頼した正当な変更なら、ユーザーに 'touch .claude/allow-selfmod' の実行を依頼してから再試行すること(60分で自動失効)" ;;
+      *claude.md)
+        case "$(basename "$pl")" in
+          claude.md)
+            deny "運用ルール(CLAUDE.md)の変更は原則禁止。ユーザーが承認した変更(/retro の教訓追記など)なら、ユーザーに 'touch .claude/allow-selfmod' の実行を依頼してから再試行すること(60分で自動失効)" ;;
+        esac ;;
     esac
   done
 fi

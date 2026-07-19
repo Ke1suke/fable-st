@@ -5,6 +5,7 @@
 # 位置づけ: これは「事故防止」であり「セキュリティ境界」ではない(README の既知の制約を参照)。
 # 正規表現ベースのため変形コマンドで原理的に迂回可能。引用文字列・ヒアドキュメント内の
 # テキストにも反応する(安全側の誤検知として許容する)。grep は行単位でマッチする。
+# フックを変更したら .claude/hooks/tests/test-hooks.sh で回帰テストを実行すること。
 # プロジェクト固有の危険コマンドは末尾のセクションに追加すること。
 
 INPUT=$(cat)
@@ -20,12 +21,21 @@ deny() {
   exit 2
 }
 
-# --- 自己改変ガード: 防御機構そのものを Bash 経由で書き換えることを禁止 ---
-# メンテナンス時はユーザー承認のもと `touch .claude/allow-selfmod` で一時解除(作業後に削除)。
-if [ ! -f "${CLAUDE_PROJECT_DIR:-.}/.claude/allow-selfmod" ]; then
-  if echo "$CMD" | grep -qE '\.claude/(settings(\.local)?\.json|hooks/)' \
-     && echo "$CMD" | grep -qE '(>|>>|sed[[:space:]]+-i|tee[[:space:]]|mv[[:space:]]|cp[[:space:]]|rm[[:space:]]|chmod[[:space:]]|truncate[[:space:]]|ln[[:space:]])'; then
-    deny "ガード機構(.claude/settings*.json, .claude/hooks/)の Bash 経由の変更は禁止。ユーザーが依頼した正当なメンテナンスなら、ユーザーに 'touch .claude/allow-selfmod' の実行(または手動編集)を依頼すること"
+# --- 自己改変ガード: 防御機構と運用ルールを Bash 経由で書き換えることを禁止 ---
+# 対象: .claude/settings.json, hooks/, agents/, commands/, CLAUDE.md(大文字小文字を区別しない)
+# 除外: .claude/settings.local.json(個人設定。gitignore 済みで自由に編集可)
+# メンテナンス時はユーザー承認のもと `touch .claude/allow-selfmod` で一時解除
+# (作業後に削除。消し忘れ対策として 60 分で自動失効する)。
+SENT="${CLAUDE_PROJECT_DIR:-.}/.claude/allow-selfmod"
+selfmod_allowed() {
+  [ -f "$SENT" ] || return 1
+  [ -n "$(find "$SENT" -mmin +60 2>/dev/null)" ] && return 1   # 期限切れ
+  return 0
+}
+if ! selfmod_allowed; then
+  if echo "$CMD" | grep -qiE '\.claude/(settings\.json|hooks/|agents/|commands/)|CLAUDE\.md' \
+     && echo "$CMD" | grep -qE '(>|>>|sed[[:space:]]+-i|tee[[:space:]]|mv[[:space:]]|cp[[:space:]]|rm[[:space:]]|chmod[[:space:]]|truncate[[:space:]]|install[[:space:]]|ln[[:space:]])'; then
+    deny "ガード機構・運用ルール(.claude/settings.json, hooks/, agents/, commands/, CLAUDE.md)の Bash 経由の変更は禁止。ユーザーが依頼した正当なメンテナンスなら、ユーザーに 'touch .claude/allow-selfmod' の実行を依頼すること(60分で自動失効)"
   fi
 fi
 
@@ -41,11 +51,12 @@ echo "$CMD" | grep -qE 'dd[[:space:]]+[^;&|]*of=/dev/' \
   && deny "デバイスへの dd 書き込みは禁止"
 
 # --- ファイル一括破壊 ---
-# rm + 再帰フラグ(-r / -rf / -r -f / --recursive、順不同・分離形も検出)+ 危険なターゲット
-# 危険なターゲット: 絶対パス, ~, グロブ, カレント(., ./), 親(.., ../xxx), .git
-RM_FLAGS='((-[a-zA-Z]+|--[a-z-]+)[[:space:]]+)*(-[a-zA-Z]*[rR][a-zA-Z]*|--recursive)[[:space:]]+((-[a-zA-Z]+|--[a-z-]+)[[:space:]]+)*'
-RM_TARGET='([/~*]|\./?([[:space:]]|$)|\.\.(/[^[:space:]]*)?([[:space:]]|$)|\.git([[:space:]]|$|/))'
-echo "$CMD" | grep -qE "(^|[[:space:];&|(])rm[[:space:]]+${RM_FLAGS}${RM_TARGET}" \
+# rm + 再帰フラグ(-r/-rf/-r -f/--recursive、順不同・分離形・"--" 終端も考慮)+ 危険なターゲット
+# 危険なターゲット(引用符付きも検出): 絶対パス, ~, グロブ, カレント(., ./), 親(.., ../xxx), .git
+RM_FLAG='(-{1,2}[a-zA-Z-]*[[:space:]]+)'
+RM_RFLAG='(-[a-zA-Z]*[rR][a-zA-Z]*|--recursive)'
+RM_TARGET='["'"'"']?([/~*]|\./?([[:space:]"'"'"']|$)|\.\.(/[^[:space:]]*)?([[:space:]"'"'"']|$)|\.git([[:space:]"'"'"']|$|/))'
+echo "$CMD" | grep -qE "(^|[[:space:];&|(])rm[[:space:]]+${RM_FLAG}*${RM_RFLAG}[[:space:]]+${RM_FLAG}*${RM_TARGET}" \
   && deny "危険な rm(絶対パス/ホーム/カレント/親ディレクトリ/.git への再帰削除)"
 echo "$CMD" | grep -qE 'find[[:space:]]+[^;&|]*-delete' \
   && deny "find -delete は影響範囲が読みにくいため禁止(まず -print で対象を確認しユーザー承認を得る)"
@@ -68,24 +79,25 @@ echo "$CMD" | grep -qE 'git[[:space:]]+commit[[:space:]]+[^;&|]*--no-verify' \
 echo "$CMD" | grep -qE 'git[[:space:]]+branch[[:space:]]+[^;&|]*-D([[:space:]]|$)' \
   && deny "git branch -D(未マージブランチの強制削除)は禁止"
 
-# --- 秘密情報の読み出し・書き込み(.env 系。テンプレート .env.example 等は除外) ---
-# 変形(cp してから読む、sed/awk/grep でのダンプ)もできる範囲で検出する。
+# --- 秘密情報の読み書き(.env 系。テンプレート .env.example 等は除外) ---
+# コマンドを ; & | で分割し、セグメント単位で判定する(「公認イディオム; cat .env」のような
+# 同一コマンドライン内の抱き合わせで例外判定が漏れるのを防ぐ)。大文字小文字は区別しない。
 # 変数名の一覧だけ必要な場合の公認イディオム: grep -oE '^[A-Z0-9_]+' .env
 ENV_REF='\.env(\.[A-Za-z0-9_.-]+)?([[:space:]"'"'"']|$)'
 ENV_TEMPLATE='\.env[A-Za-z0-9_.-]*\.(example|sample|template|dist)'
-if echo "$CMD" | grep -qE "(^|[[:space:];&|])(cat|less|more|head|tail|bat|strings|cp|mv|ln|dd|sed|awk|sort|uniq|tr|cut|paste|rev|od|xxd|hexdump|base64|grep|egrep|fgrep|rg)[[:space:]][^;&|]*${ENV_REF}" \
-   && ! echo "$CMD" | grep -qE "$ENV_TEMPLATE" \
-   && ! echo "$CMD" | grep -qE "(grep|rg)[[:space:]][^;&|]*-[a-zA-Z]*o[a-zA-Z]*[[:space:]][^;&|]*['\"]\^"; then
-  deny ".env の内容の表示・複製は禁止(変数名の確認だけなら grep -oE '^[A-Z0-9_]+' .env を使う)"
-fi
-if echo "$CMD" | grep -qE "open\(['\"][^'\")]*\.env" \
-   && ! echo "$CMD" | grep -qE "$ENV_TEMPLATE"; then
-  deny "スクリプト経由の .env 読み出しは禁止"
-fi
-if echo "$CMD" | grep -qE '>[[:space:]]*\.env([.[:space:]]|$)' \
-   && ! echo "$CMD" | grep -qE "$ENV_TEMPLATE"; then
-  deny ".env へのリダイレクト書き込みは禁止"
-fi
+ENV_READERS='cat|less|more|head|tail|bat|strings|cp|mv|ln|dd|sed|awk|sort|uniq|tr|cut|paste|rev|od|xxd|hexdump|base64|grep|egrep|fgrep|rg|tee|rsync|scp|install|jq|source'
+while IFS= read -r SEG; do
+  case "$SEG" in *[![:space:]]*) : ;; *) continue ;; esac
+  if echo "$SEG" | grep -qiE "(^|[[:space:]])((${ENV_READERS})|\.)[[:space:]][^;&|]*${ENV_REF}" \
+     || echo "$SEG" | grep -qiE "open\(['\"][^'\")]*\.env" \
+     || echo "$SEG" | grep -qiE ">[[:space:]]*\.env([.[:space:]\"']|$)"; then
+    echo "$SEG" | grep -qiE "$ENV_TEMPLATE" && continue
+    echo "$SEG" | grep -qE "(grep|rg)[[:space:]][^;&|]*-[a-zA-Z]*o[a-zA-Z]*[[:space:]][^;&|]*['\"]\^" && continue
+    deny ".env の読み書き・複製・読み込みは禁止(変数名の確認だけなら grep -oE '^[A-Z0-9_]+' .env を使う)"
+  fi
+done <<SEGEOF
+$(printf '%s' "$CMD" | tr ';&|' '\n')
+SEGEOF
 
 # --- 外部公開・サプライチェーン ---
 echo "$CMD" | grep -qE '(^|[[:space:];&|])(npm|pnpm|yarn)[[:space:]]+publish' \

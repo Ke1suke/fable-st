@@ -39,6 +39,7 @@ Opus 4.8 / Sonnet 5 / Haiku を適材適所で使い分け、フックによる�
 | .claude/hooks/block-danger.sh | 破壊的コマンド(rm -rf, force push, compose down 等)の実行前ブロック |
 | .claude/hooks/guard-files.sh | 秘密情報・ロックファイル・.git 内部への編集ブロック |
 | .claude/hooks/verify.sh | 編集ごとの自動 lint/型チェック(失敗は Claude に自動フィードバック) |
+| .claude/hooks/tests/test-hooks.sh | フックの回帰テスト(150件超)。フックを変更したら必ず実行する |
 | .claude/agents/explorer.md | Haiku: 探索・ログ解析(幅と安さ) |
 | .claude/agents/architect.md | Opus: 設計・難問の根本原因分析(深さ) |
 | .claude/agents/adversary.md | 敵対的レビュー(計画・差分の穴を探す) |
@@ -90,6 +91,10 @@ Opus 4.8 / Sonnet 5 / Haiku を適材適所で使い分け、フックによる�
     全体検査は /precommit と verifier が担う設計。
 - **block-danger.sh**: 末尾の「プロジェクト固有の追加禁止」に危険コマンドを追記
   (例: terraform destroy、本番 DB への接続)。
+- **フックを変更したら**: `bash .claude/hooks/tests/test-hooks.sh` で回帰テストを必ず実行する。
+  新しい危険パターンを足すときは、ブロックすべき例と通すべき例の両方をテストに追加する。
+- **モデル指定**: .claude/agents/*.md の `model:`(haiku/sonnet/opus)はエイリアス。
+  モデル世代が変わったら4ファイルの指定を見直す。
 - **permissions**(settings.json): よく使うテスト・lint 系は allow 済み。プロジェクト固有の
   コマンドを足すと確認プロンプトが減る。個人の好みは .claude/settings.local.json(gitignore 済み)へ。
 - **.claude/ や CLAUDE.md を変更したい場合**: ガード機構自体の変更はフックがブロックする。
@@ -106,6 +111,10 @@ Opus 4.8 / Sonnet 5 / Haiku を適材適所で使い分け、フックによる�
   完全には防げない。本気の防御が必要なら、コンテナ隔離・ネットワーク分離・権限分離を使うこと。
 - `.claude/allow-selfmod` による解除自体を防ぐ仕組みはない(内側からの完全な自己拘束は原理的に不可能)。
   解除はユーザーの承認を得た場合のみ、という運用ルールとセットで機能する。
+  消し忘れ対策として、センチネルは作成から60分で自動失効し、存在する間は SessionStart が警告を出す。
+- サブエージェントの「編集禁止」「STATUS.md に書かない」はプロンプトレベルの規律。
+  フックはサブエージェントのツール呼び出しにも適用されるが、一般のソースファイルへの書き込みを
+  「誰が書いたか」で区別することはできない。
 - Stop フック(prompt 型)の判定は会話上の完了報告に依存し、深い検証はしない。
   最終的な砦は /precommit と verifier サブエージェント。
 
