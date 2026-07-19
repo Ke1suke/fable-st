@@ -1,5 +1,46 @@
 {
+  "permissions": {
+    "allow": [
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git branch:*)",
+      "Bash(git stash list:*)",
+      "Bash(ls:*)",
+      "Bash(pwd)",
+      "Bash(rg:*)",
+      "Bash(wc:*)"
+    ],
+    "deny": [
+      "Read(**/.env)",
+      "Read(**/.env.local)",
+      "Read(**/.env.development)",
+      "Read(**/.env.production)",
+      "Read(**/.env.staging)",
+      "Read(**/.env.test)",
+      "Read(**/*.pem)",
+      "Read(**/*.p12)",
+      "Read(**/id_rsa*)",
+      "Read(**/id_ed25519*)",
+      "Read(**/credentials.json)",
+      "Read(**/.netrc)",
+      "Read(**/secrets/**)"
+    ]
+  },
   "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/session-start.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "matcher": "Bash",
@@ -10,11 +51,21 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/guard-files.sh",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "PostToolUse": [
       {
-        "matcher": "Edit|Write",
+        "matcher": "Edit|Write|MultiEdit",
         "hooks": [
           {
             "type": "command",
@@ -29,7 +80,7 @@
         "hooks": [
           {
             "type": "prompt",
-            "prompt": "会話の最後の作業を評価せよ: $ARGUMENTS 。コード変更を伴うタスクだった場合、テスト・lint・型チェック等の検証が実際に実行され成功した証拠が示されているか確認する。検証なしに完了を主張している場合は ok: false とし、reason に不足している検証を書く。コード変更を伴わない会話や、ユーザーが明示的に検証不要とした場合は ok: true とする。",
+            "prompt": "直前のターンを評価せよ。コード変更を伴う作業の完了を主張している場合、テスト・lint・型チェック等の検証コマンドが実際にこのターン(または直近の作業中)に実行され、その結果が根拠として示されているかを確認する。検証の証拠なしに完了を主張しているなら ok: false とし、reason に不足している検証を具体的に書く。コード変更を伴わない会話・調査・質問回答、計画の提示のみ、またはユーザーが明示的に検証不要とした場合は ok: true とする。",
             "timeout": 30
           }
         ]

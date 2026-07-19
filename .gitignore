@@ -1,0 +1,17 @@
+# 秘密情報(誤コミット防止の最終防衛線)
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+credentials.json
+
+# Claude Code の個人ローカル設定(チーム共有しない)
+.claude/settings.local.json
+
+# STATUS.md はコミットする(セッション/チームを跨ぐ作業メモリ)。
+# 個人メモとして使う場合はここに STATUS.md を追加してもよい。
