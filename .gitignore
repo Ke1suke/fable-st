@@ -13,5 +13,8 @@ credentials.json
 # Claude Code の個人ローカル設定(チーム共有しない)
 .claude/settings.local.json
 
+# ガード機構メンテ用の一時解除センチネル(コミットしない。作業後に削除する)
+.claude/allow-selfmod
+
 # STATUS.md はコミットする(セッション/チームを跨ぐ作業メモリ)。
 # 個人メモとして使う場合はここに STATUS.md を追加してもよい。

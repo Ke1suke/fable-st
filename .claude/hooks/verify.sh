@@ -2,6 +2,10 @@
 # PostToolUse (Edit|Write|MultiEdit) 検証フック
 # 失敗時は exit 2 で stderr の内容が Claude にフィードバックされ、即座に修正ループに入る。
 # 方針: 「入っているツールだけ実行」。ツール未導入なら黙って通す(導入は README 参照)。
+# 速度方針: 編集ごとに走るのは「そのファイル単体の高速チェック」のみ。
+#   プロジェクト全体の検査(tsc --noEmit, cargo check, go vet)は編集のたびに走ると
+#   重すぎるため、CLAUDE_VERIFY_FULL=1 のときだけ実行する(settings.json の env で設定可)。
+#   全体検査は /precommit と verifier が担う。
 # ★プロジェクトの言語・ツールに合わせて各ブロックを調整すること★
 
 INPUT=$(cat)
@@ -34,7 +38,7 @@ case "$FILE" in
   *.ts|*.tsx|*.mts|*.cts)
     if command -v npx >/dev/null 2>&1 && [ -f package.json ]; then
       OUT=$(npx --no-install eslint "$FILE" 2>&1) || add_error "eslint" "$OUT"
-      if [ -f tsconfig.json ]; then
+      if [ "$CLAUDE_VERIFY_FULL" = "1" ] && [ -f tsconfig.json ]; then
         OUT=$(npx --no-install tsc --noEmit 2>&1) || add_error "tsc" "$OUT"
       fi
     fi
@@ -49,12 +53,12 @@ case "$FILE" in
       OUT=$(gofmt -l "$FILE" 2>&1)
       [ -n "$OUT" ] && add_error "gofmt" "未フォーマット: $OUT(gofmt -w で修正)"
     fi
-    if command -v go >/dev/null 2>&1; then
+    if [ "$CLAUDE_VERIFY_FULL" = "1" ] && command -v go >/dev/null 2>&1; then
       OUT=$(cd "$(dirname "$FILE")" && go vet . 2>&1) || add_error "go vet" "$OUT"
     fi
     ;;
   *.rs)
-    if command -v cargo >/dev/null 2>&1 && [ -f Cargo.toml ]; then
+    if [ "$CLAUDE_VERIFY_FULL" = "1" ] && command -v cargo >/dev/null 2>&1 && [ -f Cargo.toml ]; then
       OUT=$(cargo check --quiet --message-format short 2>&1) || add_error "cargo check" "$OUT"
     fi
     ;;
@@ -84,7 +88,8 @@ case "$FILE" in
     fi
     ;;
   *.json)
-    # tsconfig 等の JSONC(コメント付きJSON)は除外
+    # tsconfig / .vscode 等の JSONC(コメント付きJSON)は除外
+    case "$FILE" in */.vscode/*) exit 0 ;; esac
     case "$(basename "$FILE")" in
       tsconfig*.json|*.jsonc|devcontainer.json) : ;;
       *)

@@ -7,10 +7,31 @@
       "Bash(git show:*)",
       "Bash(git branch:*)",
       "Bash(git stash list:*)",
+      "Bash(git add:*)",
       "Bash(ls:*)",
       "Bash(pwd)",
       "Bash(rg:*)",
-      "Bash(wc:*)"
+      "Bash(wc:*)",
+      "Bash(make:*)",
+      "Bash(npm test:*)",
+      "Bash(npm run test:*)",
+      "Bash(npm run lint:*)",
+      "Bash(npm run build:*)",
+      "Bash(npx eslint:*)",
+      "Bash(npx tsc:*)",
+      "Bash(pytest:*)",
+      "Bash(python -m pytest:*)",
+      "Bash(ruff:*)",
+      "Bash(mypy:*)",
+      "Bash(go build:*)",
+      "Bash(go test:*)",
+      "Bash(go vet:*)",
+      "Bash(gofmt:*)",
+      "Bash(cargo check:*)",
+      "Bash(cargo test:*)",
+      "Bash(cargo build:*)",
+      "Bash(cargo fmt:*)",
+      "Bash(shellcheck:*)"
     ],
     "deny": [
       "Read(**/.env)",
@@ -19,13 +40,21 @@
       "Read(**/.env.production)",
       "Read(**/.env.staging)",
       "Read(**/.env.test)",
+      "Read(**/.envrc)",
       "Read(**/*.pem)",
       "Read(**/*.p12)",
       "Read(**/id_rsa*)",
       "Read(**/id_ed25519*)",
       "Read(**/credentials.json)",
       "Read(**/.netrc)",
-      "Read(**/secrets/**)"
+      "Read(**/secrets/**)",
+      "Read(**/*.tfstate)",
+      "Read(**/*.tfstate.backup)",
+      "Read(~/.ssh/**)",
+      "Read(~/.aws/**)",
+      "Read(~/.kube/**)",
+      "Read(~/.gnupg/**)",
+      "Read(~/.docker/config.json)"
     ]
   },
   "hooks": {
@@ -80,7 +109,7 @@
         "hooks": [
           {
             "type": "prompt",
-            "prompt": "直前のターンを評価せよ。コード変更を伴う作業の完了を主張している場合、テスト・lint・型チェック等の検証コマンドが実際にこのターン(または直近の作業中)に実行され、その結果が根拠として示されているかを確認する。検証の証拠なしに完了を主張しているなら ok: false とし、reason に不足している検証を具体的に書く。コード変更を伴わない会話・調査・質問回答、計画の提示のみ、またはユーザーが明示的に検証不要とした場合は ok: true とする。",
+            "prompt": "直前のターンを評価せよ。(1) コード変更を伴う作業の完了を主張している場合、テスト・lint・型チェック等の検証コマンドが実際に実行され、その結果が根拠として示されているか。(2) 大きな変更(目安: 3ファイル超または100行超)の完了を主張している場合、verifier サブエージェントによる独立検証を実施したか(またはユーザーが明示的に不要と述べたか)。(1)(2) のいずれかを欠く場合は ok: false とし、reason に不足している検証を具体的に書く。コード変更を伴わない会話・調査・質問回答・計画の提示のみ、またはユーザーが明示的に検証不要とした場合は ok: true とする。",
             "timeout": 30
           }
         ]
